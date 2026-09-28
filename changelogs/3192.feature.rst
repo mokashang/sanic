@@ -1,0 +1,1 @@
+``request.form``, ``request.args`` and ``request.files`` now support attribute-style access. ``request.form.user_id`` returns the first value coerced to ``str``, or an empty string when the field is missing, mirroring the convenience offered by ``request.cookies`` and ``request.headers``. Trailing underscores are stripped so Python keywords such as ``class_`` remain usable.
