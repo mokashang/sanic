@@ -3,6 +3,7 @@ import random
 import pytest
 
 from sanic.cookies.request import CookieRequestParameters
+from sanic.request.form import File
 from sanic.request.parameters import RequestParameters
 from sanic.response import json
 
@@ -142,6 +143,21 @@ class TestRequestParametersAttrAccess:
         assert params["get"] == ["shadow"]
         assert params.get("get") == "shadow"
 
+    def test_file_value_returned_as_is(self):
+        """``request.files`` stores :class:`sanic.request.form.File`
+        namedtuples. Attribute access must return the ``File`` instance
+        so callers can reach ``.body``/``.name``/``.type`` — not the
+        ``repr`` of the namedtuple coerced to ``str``.
+        """
+        upload = File(type="image/png", body=b"data", name="avatar.png")
+        params = RequestParameters({"avatar": [upload]})
+        val = params.avatar
+        assert isinstance(val, File)
+        assert val is upload
+        assert val.body == b"data"
+        assert val.name == "avatar.png"
+        assert val.type == "image/png"
+
     def test_cookie_subclass_override_still_wins(self):
         """CookieRequestParameters defines its own ``__getattr__`` with
         kebab-case rewriting for HTTP cookie semantics. The subclass
@@ -195,4 +211,44 @@ def test_args_attribute_access(app):
         "page": "3",
         "sort_by": "name",
         "missing": "",
+    }
+
+
+def test_files_attribute_access(app):
+    """``request.files.<name>`` must return the :class:`File` namedtuple
+    itself, not ``str(File(...))``, so handlers can reach ``.body``,
+    ``.name`` and ``.type`` off the returned attribute.
+    """
+
+    @app.route("/", methods=["POST"])
+    async def handler(request):
+        upload = request.files.avatar
+        # If ``__getattr__`` stringifies the File, this attribute
+        # access raises AttributeError and the handler returns 500.
+        return json(
+            {
+                "type": upload.type,
+                "name": upload.name,
+                "body": upload.body.decode(),
+                "is_file": isinstance(upload, File),
+            }
+        )
+
+    payload = (
+        "------sanic\r\n"
+        'Content-Disposition: form-data; filename="avatar.png";'
+        ' name="avatar"\r\n'
+        "Content-Type: image/png\r\n"
+        "\r\n"
+        "OK\r\n"
+        "------sanic--\r\n"
+    )
+    headers = {"content-type": "multipart/form-data; boundary=----sanic"}
+    _, response = app.test_client.post("/", data=payload, headers=headers)
+    assert response.status == 200
+    assert response.json == {
+        "type": "image/png",
+        "name": "avatar.png",
+        "body": "OK",
+        "is_file": True,
     }

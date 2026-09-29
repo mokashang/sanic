@@ -32,8 +32,8 @@ class RequestParameters(dict):
         """  # noqa: E501
         return super().get(name, default) or []
 
-    def __getattr__(self, name: str) -> str:
-        """Return the first value as a string, or ``""`` when missing.
+    def __getattr__(self, name: str) -> Any:
+        """Return the first value, or ``""`` when missing.
 
         Mirrors the convenience attribute access already available on
         ``request.cookies`` and ``request.headers``. Trailing underscores
@@ -43,13 +43,28 @@ class RequestParameters(dict):
         ``snake_case``; use ``get``/``__getitem__`` for keys that contain
         characters not valid in a Python identifier.
 
+        The first value is coerced to ``str`` to match the
+        ``cookies``/``headers`` shape, except for :class:`File`
+        instances (used by ``request.files``): those are returned
+        unchanged so callers can reach ``.name``/``.body``/``.type``
+        instead of the ``repr`` of the namedtuple.
+
         Args:
             name (str): The attribute name to look up as a parameter.
 
         Returns:
-            str: The first value coerced to ``str``, or an empty string
-            if the parameter is not present.
+            The first value as a ``str``, an unwrapped :class:`File`
+            when the value is an uploaded file, or ``""`` if the
+            parameter is not present.
         """
         if name.startswith("_"):
             raise AttributeError(name)
-        return str(self.get(name.rstrip("_"), ""))
+        val = self.get(name.rstrip("_"), "")
+        # Local import: ``sanic.request.form`` imports this module at
+        # top level, so ``File`` is not available for a module-level
+        # import here.
+        from .form import File
+
+        if isinstance(val, File):
+            return val
+        return str(val)
