@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import form as _form
+
 
 class RequestParameters(dict):
     """Hosts a dict with lists as values where get returns the first value of the list and getlist returns the whole shebang"""  # noqa: E501
@@ -60,11 +62,6 @@ class RequestParameters(dict):
         if name.startswith("_"):
             raise AttributeError(name)
         val = self.get(name.rstrip("_"), "")
-        # Local import: ``sanic.request.form`` imports this module at
-        # top level, so ``File`` is not available for a module-level
-        # import here.
-        from .form import File
-
-        if isinstance(val, File):
+        if isinstance(val, _form.File):
             return val
         return str(val)
