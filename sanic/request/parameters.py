@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import form as _form
-
 
 class RequestParameters(dict):
     """Hosts a dict with lists as values where get returns the first value of the list and getlist returns the whole shebang"""  # noqa: E501
@@ -34,8 +32,8 @@ class RequestParameters(dict):
         """  # noqa: E501
         return super().get(name, default) or []
 
-    def __getattr__(self, name: str) -> Any:
-        """Return the first value, or ``""`` when missing.
+    def __getattr__(self, name: str) -> str:
+        """Return the first value as ``str``, or ``""`` when missing.
 
         Mirrors the convenience attribute access already available on
         ``request.cookies`` and ``request.headers``. Trailing underscores
@@ -45,23 +43,20 @@ class RequestParameters(dict):
         ``snake_case``; use ``get``/``__getitem__`` for keys that contain
         characters not valid in a Python identifier.
 
-        The first value is coerced to ``str`` to match the
-        ``cookies``/``headers`` shape, except for :class:`File`
-        instances (used by ``request.files``): those are returned
-        unchanged so callers can reach ``.name``/``.body``/``.type``
-        instead of the ``repr`` of the namedtuple.
+        File uploads live on ``request.files``, which is a dedicated
+        :class:`~sanic.request.form.FileRequestParameters` subclass whose
+        own ``__getattr__`` returns the uploaded :class:`File` (or
+        ``None`` when missing). This base implementation only ever
+        returns ``str`` so form and query-string callers never
+        accidentally receive a file object.
 
         Args:
             name (str): The attribute name to look up as a parameter.
 
         Returns:
-            The first value as a ``str``, an unwrapped :class:`File`
-            when the value is an uploaded file, or ``""`` if the
+            str: The first value coerced to ``str``, or ``""`` when the
             parameter is not present.
         """
         if name.startswith("_"):
             raise AttributeError(name)
-        val = self.get(name.rstrip("_"), "")
-        if isinstance(val, _form.File):
-            return val
-        return str(val)
+        return str(self.get(name.rstrip("_"), ""))

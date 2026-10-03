@@ -3,7 +3,7 @@ import random
 import pytest
 
 from sanic.cookies.request import CookieRequestParameters
-from sanic.request.form import File
+from sanic.request.form import File, FileRequestParameters
 from sanic.request.parameters import RequestParameters
 from sanic.response import json
 
@@ -143,20 +143,82 @@ class TestRequestParametersAttrAccess:
         assert params["get"] == ["shadow"]
         assert params.get("get") == "shadow"
 
-    def test_file_value_returned_as_is(self):
-        """``request.files`` stores :class:`sanic.request.form.File`
-        namedtuples. Attribute access must return the ``File`` instance
-        so callers can reach ``.body``/``.name``/``.type`` — not the
-        ``repr`` of the namedtuple coerced to ``str``.
+    def test_plain_request_parameters_never_returns_file(self):
+        """The base ``RequestParameters`` (returned by ``request.form`` and
+        ``request.args``) is now specialized to form/query fields: its
+        ``__getattr__`` always coerces to ``str``, so form-reading code
+        can treat the result as a plain string without defensive
+        ``isinstance`` checks. File uploads live on the dedicated
+        :class:`FileRequestParameters` subclass instead.
         """
         upload = File(type="image/png", body=b"data", name="avatar.png")
         params = RequestParameters({"avatar": [upload]})
+        val = params.avatar
+        assert isinstance(val, str)
+        assert not isinstance(val, File)
+
+
+class TestFileRequestParametersAttrAccess:
+    """``request.files`` is a :class:`FileRequestParameters` subclass of
+    ``RequestParameters``: attribute access returns the first
+    :class:`File` uploaded under the given name, or ``None`` when no file
+    with that name was uploaded. Keeping file-shaped parameters on their
+    own class means the base class never has to isinstance-branch between
+    strings and files at read time.
+    """
+
+    def test_file_returned_as_is(self):
+        upload = File(type="image/png", body=b"data", name="avatar.png")
+        params = FileRequestParameters({"avatar": [upload]})
         val = params.avatar
         assert isinstance(val, File)
         assert val is upload
         assert val.body == b"data"
         assert val.name == "avatar.png"
         assert val.type == "image/png"
+
+    def test_missing_returns_none(self):
+        """Missing files return ``None`` rather than ``""`` (the base
+        class default for form/args) or an empty ``File``. An empty
+        namedtuple would silently satisfy ``.body``/``.name``/``.type``
+        reads at the call site and mask the "no file uploaded" case.
+        """
+        params = FileRequestParameters(
+            {"present": [File(type="t/t", body=b"x", name="x")]}
+        )
+        assert params.missing is None
+
+    def test_first_file_returned_when_many(self):
+        a = File(type="t/t", body=b"a", name="a")
+        b = File(type="t/t", body=b"b", name="b")
+        params = FileRequestParameters({"upload": [a, b]})
+        assert params.upload is a
+
+    def test_trailing_underscore_stripped(self):
+        upload = File(type="t/t", body=b"x", name="class.pdf")
+        params = FileRequestParameters({"class": [upload]})
+        assert params.class_ is upload
+
+    def test_underscore_prefixed_attribute_raises(self):
+        """Private/dunder lookups must fall through so ``copy``/``pickle``
+        and other stdlib machinery keep working on the dict subclass.
+        """
+        params = FileRequestParameters(
+            {"x": [File(type="t/t", body=b"x", name="x")]}
+        )
+        with pytest.raises(AttributeError):
+            params.__nonexistent_dunder__  # noqa: B018
+
+    def test_subscript_still_returns_list_of_files(self):
+        """Attribute access returns the first file; the mapping shape
+        (list of files per field, as multipart allows multiple files
+        under one name) is preserved via subscript / ``getlist``.
+        """
+        a = File(type="t/t", body=b"a", name="a")
+        b = File(type="t/t", body=b"b", name="b")
+        params = FileRequestParameters({"upload": [a, b]})
+        assert params["upload"] == [a, b]
+        assert params.getlist("upload") == [a, b]
 
     def test_cookie_subclass_override_still_wins(self):
         """CookieRequestParameters defines its own ``__getattr__`` with
@@ -216,21 +278,23 @@ def test_args_attribute_access(app):
 
 def test_files_attribute_access(app):
     """``request.files.<name>`` must return the :class:`File` namedtuple
-    itself, not ``str(File(...))``, so handlers can reach ``.body``,
-    ``.name`` and ``.type`` off the returned attribute.
+    itself (so handlers can reach ``.body``/``.name``/``.type``), and
+    ``None`` for a field that was not uploaded (so handlers can test
+    for presence without catching ``AttributeError`` or hitting an
+    empty-string sentinel).
     """
 
     @app.route("/", methods=["POST"])
     async def handler(request):
         upload = request.files.avatar
-        # If ``__getattr__`` stringifies the File, this attribute
-        # access raises AttributeError and the handler returns 500.
+        missing = request.files.not_uploaded
         return json(
             {
                 "type": upload.type,
                 "name": upload.name,
                 "body": upload.body.decode(),
                 "is_file": isinstance(upload, File),
+                "missing_is_none": missing is None,
             }
         )
 
@@ -251,4 +315,39 @@ def test_files_attribute_access(app):
         "name": "avatar.png",
         "body": "OK",
         "is_file": True,
+        "missing_is_none": True,
+    }
+
+
+def test_files_is_file_request_parameters(app):
+    """The ``request.files`` property is the ``FileRequestParameters``
+    subclass, not a plain ``RequestParameters``. That is what makes
+    attribute access on form/args safely ``str``-only without a
+    runtime ``isinstance`` branch in the base ``__getattr__``.
+    """
+
+    @app.route("/", methods=["POST"])
+    async def handler(request):
+        return json(
+            {
+                "files_cls": type(request.files).__name__,
+                "form_cls": type(request.form).__name__,
+            }
+        )
+
+    payload = (
+        "------sanic\r\n"
+        'Content-Disposition: form-data; filename="x.txt";'
+        ' name="upload"\r\n'
+        "Content-Type: text/plain\r\n"
+        "\r\n"
+        "x\r\n"
+        "------sanic--\r\n"
+    )
+    headers = {"content-type": "multipart/form-data; boundary=----sanic"}
+    _, response = app.test_client.post("/", data=payload, headers=headers)
+    assert response.status == 200
+    assert response.json == {
+        "files_cls": "FileRequestParameters",
+        "form_cls": "RequestParameters",
     }
